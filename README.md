@@ -54,11 +54,17 @@ See [`.env.example`](.env.example) for the full list with comments.
 npm install
 npm run typecheck
 npm test
+npm run test:coverage   # writes ./coverage (html, lcov, cobertura)
 ```
 
 Requires Node 24+ — uses native TypeScript stripping, no build step.
 Imports use `.ts` extensions; no `enum` / `namespace` / parameter
 properties (strip-only mode).
+
+Coverage is collected via `@vitest/coverage-v8`. The `test` CI job
+uploads the full `coverage/` directory as an artifact and posts a
+line/branch summary into the job page; `cobertura-coverage.xml` is the
+machine-readable feed for external coverage tools.
 
 ## Docker
 

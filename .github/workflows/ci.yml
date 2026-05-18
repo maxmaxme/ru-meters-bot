@@ -31,7 +31,33 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - run: npm test
+      - run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 14
+
+      - name: Summarize coverage in job
+        if: always()
+        run: |
+          if [ -f coverage/cobertura-coverage.xml ]; then
+            line_rate=$(grep -m1 -oP 'line-rate="\K[^"]+' coverage/cobertura-coverage.xml || echo "0")
+            branch_rate=$(grep -m1 -oP 'branch-rate="\K[^"]+' coverage/cobertura-coverage.xml || echo "0")
+            line_pct=$(awk -v r="$line_rate" 'BEGIN{printf "%.2f", r*100}')
+            branch_pct=$(awk -v r="$branch_rate" 'BEGIN{printf "%.2f", r*100}')
+            {
+              echo "### Coverage"
+              echo ""
+              echo "| Metric | % |"
+              echo "| --- | --- |"
+              echo "| Lines | ${line_pct}% |"
+              echo "| Branches | ${branch_pct}% |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   build:
     needs: [typecheck, test]
