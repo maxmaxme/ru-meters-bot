@@ -1,35 +1,20 @@
 import { parseArgs } from 'node:util';
 import { mkdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { runOnce } from './runOnce.ts';
 import { openSubmissionsStore } from './storage/sqlite.ts';
 import { TelegramNotifier } from './notify/telegram.ts';
 import { Tgc1Portal } from './portals/tgc1.ts';
 import { PescPortal } from './portals/pesc.ts';
 import { createLogger } from './logger.ts';
+import { loadEnvFiles, defaultEnvCandidates } from './env.ts';
 import type { Portal } from './portals/types.ts';
 
 const log = createLogger('index');
 
 // Auto-load .env when running outside the container. In production the file
-// is injected by docker-compose's `env_file`, so the lookups below are
-// no-ops — but they save `set -a; source .env; set +a` dance locally.
-// Uses Node 24's built-in `process.loadEnvFile()` — no dependency.
-loadEnvIfPresent();
-
-function loadEnvIfPresent(): void {
-  // src/index.ts → services/meters/.env, repo-root/.env (in that order).
-  const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [join(here, '..', '.env'), join(here, '..', '..', '..', '.env')];
-  for (const p of candidates) {
-    try {
-      process.loadEnvFile(p);
-    } catch {
-      // File missing or unreadable — fine, fall through.
-    }
-  }
-}
+// is injected by docker-compose's `env_file`, so this is a no-op.
+loadEnvFiles(defaultEnvCandidates(import.meta.url));
 
 function env(name: string, fallback?: string): string {
   const v = process.env[name];
