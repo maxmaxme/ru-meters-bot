@@ -1,8 +1,15 @@
 # ru-meters-bot
 
-One-shot Node service that submits monthly meter readings to ТГК-1 and
-pesc.ru via their JSON REST APIs (login → JWT → debt + device list →
-create-reading → verify). No browser, no Chromium.
+One-shot Node service that submits monthly meter readings to Russian
+utility portals (ТГК-1 and pesc.ru) via their JSON REST APIs (login →
+JWT → debt + device list → create-reading → verify). No browser, no
+Chromium.
+
+Supported portals (one adapter per portal, see `src/portals/`):
+
+- **ТГК-1** (`tgc1.ru`) — heating / hot water.
+- **pesc.ru** — Petroelektrosbyt; geo-blocks non-RU egress, so production
+  routes it through an HTTP proxy via `PESC_PROXY_URL`.
 
 Designed to run on a Raspberry Pi inside the
 [voice-assistant](https://github.com/maxmaxme/voice-assistant) docker

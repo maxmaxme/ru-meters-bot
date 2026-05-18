@@ -1,7 +1,7 @@
 {
   "name": "ru-meters-bot",
   "version": "0.1.0",
-  "description": "Monthly meter-reading submitter for ТГК-1",
+  "description": "Monthly meter-reading submitter for Russian utility portals (ТГК-1, pesc.ru)",
   "private": true,
   "type": "module",
   "scripts": {
