@@ -1,14 +1,12 @@
-import { parseArgs } from 'node:util';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runOnce } from './runOnce.ts';
 import { openSubmissionsStore } from './storage/sqlite.ts';
 import { TelegramNotifier } from './notify/telegram.ts';
-import { Tgc1Portal } from './portals/tgc1.ts';
-import { PescPortal } from './portals/pesc.ts';
 import { createLogger } from './logger.ts';
-import { loadEnvFiles, defaultEnvCandidates } from './env.ts';
-import type { Portal } from './portals/types.ts';
+import { loadEnvFiles, defaultEnvCandidates, requireEnv } from './env.ts';
+import { parseCliArgs, USAGE } from './cli.ts';
+import { enabledPortals, selectRequestedPortals, portalDeps } from './portals/registry.ts';
 
 const log = createLogger('index');
 
@@ -16,96 +14,34 @@ const log = createLogger('index');
 // is injected by docker-compose's `env_file`, so this is a no-op.
 loadEnvFiles(defaultEnvCandidates(import.meta.url));
 
-function env(name: string, fallback?: string): string {
-  const v = process.env[name];
-  if (v === undefined || v === '') {
-    if (fallback !== undefined) {
-      return fallback;
-    }
-    throw new Error(`Missing required env var: ${name}`);
-  }
-  return v;
-}
-
 async function main(): Promise<void> {
-  const { values } = parseArgs({
-    options: {
-      portal: { type: 'string' },
-      force: { type: 'boolean', default: false },
-      help: { type: 'boolean', short: 'h', default: false },
-    },
-  });
+  const args = parseCliArgs(process.argv.slice(2));
 
-  if (values.help) {
-    console.log(`Usage: node src/index.ts [--portal=tgc1|pesc] [--force]
-
-Options:
-  --portal=NAME   Drive only the named portal. If omitted, every portal with
-                  a configured *_LOGIN env is driven in order.
-  --force         Ignore the targetDay gate and the done/blocked row status.
-                  Still respects the per-period attempts cap.
-`);
+  if (args.help) {
+    console.log(USAGE);
     return;
   }
 
-  const dataDir = env('METERS_DATA_DIR', '/app/data');
+  const env = process.env;
+  const dataDir = requireEnv(env, 'METERS_DATA_DIR', '/app/data');
   await mkdir(dataDir, { recursive: true });
 
   const store = openSubmissionsStore(join(dataDir, 'meters.sqlite'));
   const notifier = new TelegramNotifier({
-    token: env('TELEGRAM_BOT_TOKEN'),
-    chatId: env('TELEGRAM_CHAT_ID'),
+    token: requireEnv(env, 'TELEGRAM_BOT_TOKEN'),
+    chatId: requireEnv(env, 'TELEGRAM_CHAT_ID'),
   });
 
-  const allPortals: Portal[] = [];
-  if (process.env.TGC1_LOGIN !== undefined && process.env.TGC1_LOGIN !== '') {
-    allPortals.push(new Tgc1Portal());
-  }
-  if (process.env.PESC_LOGIN !== undefined && process.env.PESC_LOGIN !== '') {
-    allPortals.push(
-      new PescPortal({
-        totpSecret: process.env.PESC_TOTP_SECRET,
-        proxyUrl: process.env.PESC_PROXY_URL,
-      }),
-    );
-  }
-
-  const portals =
-    values.portal === undefined ? allPortals : allPortals.filter((p) => p.name === values.portal);
-  if (portals.length === 0) {
-    throw new Error(
-      values.portal === undefined
-        ? 'No portals enabled — set TGC1_LOGIN and/or PESC_LOGIN'
-        : `Portal not enabled or unknown: ${values.portal}`,
-    );
-  }
+  const portals = selectRequestedPortals(enabledPortals(env), args.portal);
 
   try {
     await runOnce({
       store,
       notifier,
       portals,
-      portalDepsFor: (name) => {
-        if (name === 'tgc1') {
-          return {
-            login: env('TGC1_LOGIN'),
-            password: env('TGC1_PASSWORD'),
-            lastSubmittedValueFor: (meter) => store.lastSubmittedValueFor('tgc1', meter),
-            today: () => new Date(),
-          };
-        }
-        if (name === 'pesc') {
-          return {
-            login: env('PESC_LOGIN'),
-            password: env('PESC_PASSWORD'),
-            lastSubmittedValueFor: (meter) => store.lastSubmittedValueFor('pesc', meter),
-            today: () => new Date(),
-          };
-        }
-        throw new Error(`No deps configured for portal: ${name}`);
-      },
+      portalDepsFor: (name) => portalDeps(name, { env, store, now: () => new Date() }),
       now: new Date(),
-      force: values.force,
+      force: args.force,
     });
   } finally {
     store.close();

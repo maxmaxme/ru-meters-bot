@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadEnvFiles, defaultEnvCandidates } from '../src/env.ts';
+import { loadEnvFiles, defaultEnvCandidates, requireEnv } from '../src/env.ts';
 
 describe('loadEnvFiles', () => {
   let dir: string;
@@ -93,5 +93,35 @@ describe('defaultEnvCandidates', () => {
 
   it('returns exactly one candidate (no surprise lookups outside the repo)', () => {
     expect(defaultEnvCandidates('file:///fake/repo/src/index.ts')).toHaveLength(1);
+  });
+});
+
+describe('requireEnv', () => {
+  it('returns the value when set', () => {
+    expect(requireEnv({ FOO: 'bar' }, 'FOO')).toBe('bar');
+  });
+
+  it('returns the fallback when the var is unset', () => {
+    expect(requireEnv({}, 'FOO', 'default')).toBe('default');
+  });
+
+  it('returns the fallback when the var is an empty string', () => {
+    expect(requireEnv({ FOO: '' }, 'FOO', 'default')).toBe('default');
+  });
+
+  it('throws when the var is unset and no fallback is provided', () => {
+    expect(() => requireEnv({}, 'FOO')).toThrow(/Missing required env var: FOO/);
+  });
+
+  it('throws when the var is empty and no fallback is provided', () => {
+    expect(() => requireEnv({ FOO: '' }, 'FOO')).toThrow(/Missing required env var: FOO/);
+  });
+
+  it('does not treat whitespace as empty (caller decides)', () => {
+    expect(requireEnv({ FOO: '   ' }, 'FOO')).toBe('   ');
+  });
+
+  it('prefers the set value over the fallback', () => {
+    expect(requireEnv({ FOO: 'set' }, 'FOO', 'fallback')).toBe('set');
   });
 });
