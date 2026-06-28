@@ -78,3 +78,13 @@ docker run --rm \
   -v "$(pwd)/data:/app/data" \
   ghcr.io/maxmaxme/ru-meters-bot:latest --force
 ```
+
+## License
+
+Copyright (C) 2026 maxmaxme.
+
+Licensed under the **GNU Affero General Public License v3.0 or later**
+([AGPL-3.0-or-later](LICENSE)). You may use, study, modify and self-host this
+software freely, but any modified version you distribute **or run as a network
+service** must also be released under the AGPL — its complete source, including
+your changes, must be made available to its users. There is no warranty.
