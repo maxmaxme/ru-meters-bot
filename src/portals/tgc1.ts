@@ -1,5 +1,5 @@
 import type { AccountInfo, MeterReading } from '../storage/types.ts';
-import type { Portal, PortalDeps } from './types.ts';
+import { PortalBlockedError, type Portal, type PortalDeps } from './types.ts';
 import { createLogger } from '../logger.ts';
 import { formatBalanceText } from './balance.ts';
 
@@ -72,8 +72,18 @@ export class Tgc1Portal implements Portal {
     const todayStr = todayDdMmYyyy(deps.today());
     const submitted: MeterReading[] = [];
     const newlyPosted: number[] = [];
+    const overdue: DeviceDto[] = [];
 
     for (const d of devices) {
+      // The portal rejects readings for a meter past its поверка ("Передача
+      // текущих показаний по приборам учета с истекшим сроком поверки
+      // невозможна"), so don't POST; retrying can't fix it either.
+      if (d.dtNextVerification !== undefined && isBeforeDdMmYyyy(d.dtNextVerification, todayStr)) {
+        log.warn({ meter: d.number, dtNextVerification: d.dtNextVerification }, 'verification overdue, skipping');
+        overdue.push(d);
+        continue;
+      }
+
       // A portal value above our last submission means someone sent a real
       // reading by hand — fine, resubmit it. Only a drop below what we sent is
       // suspicious. Refusing on any difference would wedge the bot for good:
@@ -109,14 +119,8 @@ export class Tgc1Portal implements Portal {
           submitted.push({ meter: d.number, kind: d.serviceName, value: d.lastReading });
           continue;
         }
-        // The likeliest cause outside the submission window is an expired
-        // поверка — name it, so the failure message says what to do.
-        const overdue =
-          d.dtNextVerification !== undefined &&
-          isBeforeDdMmYyyy(d.dtNextVerification, todayStr);
-        const hint = overdue ? `; verification overdue since ${d.dtNextVerification ?? ''}` : '';
         throw new Error(
-          `Meter ${d.number} not accepting readings (enabled=false, dtLastReading=${d.dtLastReading}${hint})`,
+          `Meter ${d.number} not accepting readings (enabled=false, dtLastReading=${d.dtLastReading})`,
         );
       }
 
@@ -140,6 +144,14 @@ export class Tgc1Portal implements Portal {
           );
         }
       }
+    }
+
+    if (overdue.length > 0) {
+      const list = overdue
+        .map((d) => `${d.serviceName} №${d.number} (поверка до ${d.dtNextVerification ?? '?'})`)
+        .join(', ');
+      const rest = submitted.length > 0 ? `; остальные поданы: ${String(submitted.length)} шт` : '';
+      throw new PortalBlockedError(`истёк срок поверки — ${list}${rest}`);
     }
 
     return { info, values: submitted, alreadySubmitted: newlyPosted.length === 0 };

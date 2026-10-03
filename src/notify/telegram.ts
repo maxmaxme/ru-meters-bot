@@ -63,6 +63,13 @@ export class TelegramNotifier implements Notifier {
     );
   }
 
+  async blocked(input: { portal: string; period: string; reason: string }): Promise<void> {
+    await this.send(
+      `⛔ ${label(input.portal)} за ${input.period}: показания не поданы — ${input.reason}.\n` +
+        `В этом месяце больше не пробую.`,
+    );
+  }
+
   private async send(text: string): Promise<void> {
     const url = `https://api.telegram.org/bot${this.token}/sendMessage`;
     const res = await this.fetchImpl(url, {

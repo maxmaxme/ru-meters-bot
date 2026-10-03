@@ -16,4 +16,6 @@ export interface Notifier {
     error: string;
   }): Promise<void>;
   windowClosed(input: { portal: string; period: string }): Promise<void>;
+  /** The portal can't take readings this period; no more attempts until next. */
+  blocked(input: { portal: string; period: string; reason: string }): Promise<void>;
 }

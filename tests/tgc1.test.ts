@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Tgc1Portal } from '../src/portals/tgc1.ts';
+import { PortalBlockedError } from '../src/portals/types.ts';
 import type { PortalDeps } from '../src/portals/types.ts';
 
 interface DeviceFixture {
@@ -255,26 +256,43 @@ describe('Tgc1Portal.run — enabled flag semantics', () => {
     });
     await expect(portal.run(makeDeps())).rejects.toThrow(/not accepting/);
   });
+});
 
-  it('names an overdue verification as the reason for enabled=false', async () => {
-    const device = (dtNextVerification: string): DeviceFixture => ({
-      id: 1,
-      number: 'M1',
-      serviceName: 'ГВС м3',
-      lastReading: 15.013,
-      dtLastReading: '15.04.2026',
-      dtNextVerification,
-      enabled: false,
-      requiredVerification: true,
+describe('Tgc1Portal.run — overdue verification', () => {
+  const device = (id: number, dtNextVerification: string, enabled: boolean): DeviceFixture => ({
+    id,
+    number: `M${String(id)}`,
+    serviceName: 'ГВС м3',
+    lastReading: 15.013,
+    dtLastReading: '15.04.2026',
+    dtNextVerification,
+    enabled,
+    requiredVerification: true,
+  });
+
+  it('does not POST an overdue meter and throws PortalBlockedError', async () => {
+    const fetchMock = makeFetchMock({ devicesBefore: [device(1, '27.04.2026', false)] });
+    const portal = new Tgc1Portal({ fetch: fetchMock as unknown as typeof fetch, verifyDelayMs: 0 });
+
+    const err = await portal.run(makeDeps()).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PortalBlockedError);
+    expect((err as Error).message).toBe('истёк срок поверки — ГВС м3 №M1 (поверка до 27.04.2026)');
+    const posts = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/create-reading'));
+    expect(posts).toHaveLength(0);
+  });
+
+  it('still submits meters whose verification is valid, then blocks', async () => {
+    const valid = device(2, '27.09.2026', true);
+    const fetchMock = makeFetchMock({
+      devicesBefore: [device(1, '27.04.2026', false), valid],
+      devicesAfter: [device(1, '27.04.2026', false), { ...valid, dtLastReading: todayStr, enabled: false }],
     });
-    const run = (d: DeviceFixture): Promise<unknown> =>
-      new Tgc1Portal({
-        fetch: makeFetchMock({ devicesBefore: [d] }) as unknown as typeof fetch,
-        verifyDelayMs: 0,
-      }).run(makeDeps());
+    const portal = new Tgc1Portal({ fetch: fetchMock as unknown as typeof fetch, verifyDelayMs: 0 });
 
-    await expect(run(device('27.04.2026'))).rejects.toThrow(/verification overdue since 27\.04\.2026/);
-    await expect(run(device('27.09.2026'))).rejects.toThrow(/dtLastReading=15\.04\.2026\)$/);
+    await expect(portal.run(makeDeps())).rejects.toThrow(/№M1 .*; остальные поданы: 1 шт$/);
+    const posts = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/create-reading'));
+    expect(posts).toHaveLength(1);
   });
 });
 
