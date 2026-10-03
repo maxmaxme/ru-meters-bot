@@ -8,6 +8,7 @@ interface DeviceFixture {
   serviceName: string;
   lastReading: number;
   dtLastReading: string;
+  dtNextVerification?: string;
   enabled: boolean;
   requiredVerification?: boolean;
   verificationWarning?: boolean;
@@ -151,9 +152,10 @@ describe('Tgc1Portal.run — happy path', () => {
 });
 
 describe('Tgc1Portal.run — balanceText formatting', () => {
-  async function balanceFor(sm: number): Promise<string | null> {
+  async function balanceFor(sm: number | undefined, debtResponse?: Response): Promise<string | null> {
     const fetchMock = makeFetchMock({
-      debt: { accountList: ['ACC'], sm },
+      debt: { accountList: ['ACC'], sm: sm as number },
+      debtResponse,
       devicesBefore: [
         {
           id: 1,
@@ -187,8 +189,16 @@ describe('Tgc1Portal.run — balanceText formatting', () => {
     expect(await balanceFor(-12.5)).toBe('переплата 12.50 руб');
   });
 
-  it('positive sm → задолженность', async () => {
-    expect(await balanceFor(100)).toBe('задолженность 100.00 руб');
+  it('positive sm → к оплате', async () => {
+    expect(await balanceFor(100)).toBe('к оплате 100.00 руб');
+  });
+
+  it('non-numeric sm is flagged, not read as no debt', async () => {
+    expect(await balanceFor(undefined)).toBe('не распознано позиций: 1, см. лог');
+  });
+
+  it('debt endpoint failure leaves info null and still submits', async () => {
+    expect(await balanceFor(0, new Response('boom', { status: 500 }))).toBeNull();
   });
 
   it('zero sm → расчёты без долга', async () => {
@@ -245,10 +255,52 @@ describe('Tgc1Portal.run — enabled flag semantics', () => {
     });
     await expect(portal.run(makeDeps())).rejects.toThrow(/not accepting/);
   });
+
+  it('names an overdue verification as the reason for enabled=false', async () => {
+    const device = (dtNextVerification: string): DeviceFixture => ({
+      id: 1,
+      number: 'M1',
+      serviceName: 'ГВС м3',
+      lastReading: 15.013,
+      dtLastReading: '15.04.2026',
+      dtNextVerification,
+      enabled: false,
+      requiredVerification: true,
+    });
+    const run = (d: DeviceFixture): Promise<unknown> =>
+      new Tgc1Portal({
+        fetch: makeFetchMock({ devicesBefore: [d] }) as unknown as typeof fetch,
+        verifyDelayMs: 0,
+      }).run(makeDeps());
+
+    await expect(run(device('27.04.2026'))).rejects.toThrow(/verification overdue since 27\.04\.2026/);
+    await expect(run(device('27.09.2026'))).rejects.toThrow(/dtLastReading=15\.04\.2026\)$/);
+  });
 });
 
 describe('Tgc1Portal.run — cached prev mismatch', () => {
-  it('throws before POSTing when cache disagrees with portal', async () => {
+  it('proceeds when the portal is above the cache (manual submission in between)', async () => {
+    const posted: Array<{ counterId: number; value: number }> = [];
+    const fetchMock = makeFetchMock({
+      devicesBefore: [
+        { id: 1, number: 'M1', serviceName: 'X', lastReading: 15.013, dtLastReading: '22.04.2026', enabled: true },
+      ],
+      devicesAfter: [
+        { id: 1, number: 'M1', serviceName: 'X', lastReading: 15.013, dtLastReading: todayStr, enabled: false },
+      ],
+      createResponse: (body) => {
+        posted.push(body);
+        return jsonResponse({});
+      },
+    });
+    const portal = new Tgc1Portal({ fetch: fetchMock as unknown as typeof fetch, verifyDelayMs: 0 });
+
+    await portal.run(makeDeps({ lastSubmittedValueFor: (m) => (m === 'M1' ? 10 : null) }));
+
+    expect(posted).toEqual([{ counterId: 1, value: 15.013 }]);
+  });
+
+  it('throws before POSTing when the portal dropped below the cache', async () => {
     const fetchMock = makeFetchMock({
       debt: { accountList: ['ACC'], sm: 0 },
       devicesBefore: [

@@ -92,6 +92,7 @@ src/portals/
   registry.ts                      # name → adapter
   tgc1.ts                          # ТГК-1 (heating / hot water)
   pesc.ts                          # pesc.ru (Petroelektrosbyt) — uses PESC_PROXY_URL, optional TOTP
+  balance.ts                       # shared balanceText wording; portals map their API shape to {debt, overpayment}
 src/storage/
   sqlite.ts                        # better-sqlite3 wrapper
   migrations.ts                    # TS string constants; runner skips already-applied versions

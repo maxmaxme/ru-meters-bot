@@ -1,6 +1,7 @@
 import type { AccountInfo, MeterReading } from '../storage/types.ts';
 import type { Portal, PortalDeps } from './types.ts';
 import { createLogger } from '../logger.ts';
+import { formatBalanceText } from './balance.ts';
 
 const log = createLogger('portal:tgc1');
 
@@ -16,6 +17,8 @@ interface DeviceDto {
   serviceName: string;
   lastReading: number;
   dtLastReading: string;
+  /** DD.MM.YYYY. Once past, the portal stops taking readings for the meter. */
+  dtNextVerification?: string;
   enabled: boolean;
   requiredVerification?: boolean;
   verificationWarning?: boolean;
@@ -71,10 +74,20 @@ export class Tgc1Portal implements Portal {
     const newlyPosted: number[] = [];
 
     for (const d of devices) {
+      // A portal value above our last submission means someone sent a real
+      // reading by hand — fine, resubmit it. Only a drop below what we sent is
+      // suspicious. Refusing on any difference would wedge the bot for good:
+      // the cache only updates on a successful run.
       const cached = deps.lastSubmittedValueFor(d.number);
-      if (cached !== null && Math.abs(cached - d.lastReading) > 0.001) {
+      if (cached !== null && cached - d.lastReading > 0.001) {
         throw new Error(
-          `Cached prev (${String(cached)}) for meter ${d.number} differs from portal (${String(d.lastReading)}) — refuse to submit`,
+          `Cached prev (${String(cached)}) for meter ${d.number} is above portal (${String(d.lastReading)}) — refuse to submit`,
+        );
+      }
+      if (cached !== null && d.lastReading - cached > 0.001) {
+        log.warn(
+          { meter: d.number, cached, portal: d.lastReading },
+          'portal reading is above our last submission (manual submit?), proceeding',
         );
       }
 
@@ -84,6 +97,7 @@ export class Tgc1Portal implements Portal {
             meter: d.number,
             requiredVerification: d.requiredVerification,
             verificationWarning: d.verificationWarning,
+            dtNextVerification: d.dtNextVerification,
           },
           'meter has verification warning, proceeding anyway',
         );
@@ -95,8 +109,14 @@ export class Tgc1Portal implements Portal {
           submitted.push({ meter: d.number, kind: d.serviceName, value: d.lastReading });
           continue;
         }
+        // The likeliest cause outside the submission window is an expired
+        // поверка — name it, so the failure message says what to do.
+        const overdue =
+          d.dtNextVerification !== undefined &&
+          isBeforeDdMmYyyy(d.dtNextVerification, todayStr);
+        const hint = overdue ? `; verification overdue since ${d.dtNextVerification ?? ''}` : '';
         throw new Error(
-          `Meter ${d.number} not accepting readings (enabled=false, dtLastReading=${d.dtLastReading})`,
+          `Meter ${d.number} not accepting readings (enabled=false, dtLastReading=${d.dtLastReading}${hint})`,
         );
       }
 
@@ -136,25 +156,32 @@ export class Tgc1Portal implements Portal {
     return body.accessToken;
   }
 
+  /**
+   * Best-effort: the balance only decorates the success message, so a failing
+   * or odd debt endpoint must not stop the readings from being submitted.
+   */
   private async fetchAccountInfo(token: string): Promise<AccountInfo | null> {
-    const body = await this.json<DebtDto>(
-      'GET',
-      '/api/fl/dashboard/debt',
-      token,
-      undefined,
-      '/fl/',
-    );
-    if (!body.accountList || body.accountList.length === 0) {
+    let body: DebtDto;
+    try {
+      body = await this.json<DebtDto>('GET', '/api/fl/dashboard/debt', token, undefined, '/fl/');
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, 'failed to fetch debt, leaving info null');
       return null;
     }
-    const sm = body.sm;
-    const balanceText =
-      sm < 0
-        ? `переплата ${Math.abs(sm).toFixed(2)} руб`
-        : sm > 0
-          ? `задолженность ${sm.toFixed(2)} руб`
-          : 'расчёты без долга';
-    return { accountId: body.accountList.join(', '), balanceText };
+    if (!Array.isArray(body.accountList) || body.accountList.length === 0) {
+      return null;
+    }
+    const sm: unknown = body.sm;
+    if (typeof sm !== 'number') {
+      // A missing or string `sm` would otherwise compare false both ways and
+      // read as 'расчёты без долга'.
+      log.warn({ sm }, 'debt.sm is not a number');
+    }
+    const summary =
+      typeof sm === 'number'
+        ? { debt: Math.max(sm, 0), overpayment: Math.max(-sm, 0) }
+        : { debt: 0, overpayment: 0, unrecognised: 1 };
+    return { accountId: body.accountList.join(', '), balanceText: formatBalanceText(summary) };
   }
 
   private async fetchDevices(token: string): Promise<DeviceDto[]> {
@@ -233,6 +260,17 @@ function todayDdMmYyyy(today: Date): string {
     month: '2-digit',
     year: 'numeric',
   }).format(today);
+}
+
+/** `a < b` for DD.MM.YYYY dates; false if either does not parse. */
+function isBeforeDdMmYyyy(a: string, b: string): boolean {
+  const key = (s: string): string | null => {
+    const m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(s);
+    return m ? `${m[3]}${m[2]}${m[1]}` : null;
+  };
+  const ka = key(a);
+  const kb = key(b);
+  return ka !== null && kb !== null && ka < kb;
 }
 
 function sleep(ms: number): Promise<void> {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { PescPortal, generateTotp } from '../src/portals/pesc.ts';
+import { formatBalanceText } from '../src/portals/balance.ts';
+import { PescPortal, generateTotp, summarizeBill, type BillLineDto } from '../src/portals/pesc.ts';
 import type { PortalDeps } from '../src/portals/types.ts';
 
 interface IndicationFixture {
@@ -24,13 +25,18 @@ interface MockOptions {
   authResponse?: Response;
   groupsResponse?: Response;
   groups?: Array<{ id: number; name?: string; accounts: number[] }>;
-  bill?: { amount: number; id?: string };
+  bill?: BillLineDto[];
   billResponse?: Response;
   metersBefore: MeterFixture[];
   metersAfter?: MeterFixture[];
   submitResponse?: (body: Array<{ scaleId: number; value: number }>) => Response;
   /** Capture POST bodies for assertions. */
   submits?: Array<{ registration: string; body: Array<{ scaleId: number; value: number }> }>;
+}
+
+/** One row of the discretion endpoint, shaped like the live pesc response. */
+function billLine(name: string, value: number, type: number): BillLineDto {
+  return { subservice: { name }, charge: { balance: { value, type } } };
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -75,7 +81,7 @@ function makeFetchMock(opts: MockOptions): ReturnType<typeof vi.fn> {
       if (opts.billResponse) {
         return opts.billResponse.clone();
       }
-      return jsonResponse(opts.bill ?? { amount: -75.18, id: 'B1' });
+      return jsonResponse(opts.bill ?? [billLine('Электроэнергия', 75.18, 3)]);
     }
 
     if (/\/api\/v6\/accounts\/\d+\/meters\/info$/.test(url) && method === 'GET') {
@@ -146,6 +152,30 @@ describe('PescPortal.run', () => {
     expect(result.values).toEqual([{ meter: '12345:1', kind: 'T1', value: 10.001 }]);
     expect(submits).toHaveLength(1);
     expect(submits[0]).toEqual({ registration: '12345', body: [{ scaleId: 1, value: 10.001 }] });
+  });
+
+  it.each([
+    ['an object instead of an array', jsonResponse({ amount: 0 })],
+    ['a null row', jsonResponse([null])],
+  ])('bill response with %s leaves info null and still submits readings', async (_, billResponse) => {
+    const submits: MockOptions['submits'] = [];
+    const meter = (previousReading: number): MeterFixture => ({
+      id: { registration: '12345' },
+      numberOfDigitsRight: 3,
+      indications: [{ meterScaleId: 1, previousReading }],
+    });
+    const fetchMock = makeFetchMock({
+      submits,
+      billResponse,
+      metersBefore: [meter(10)],
+      metersAfter: [meter(10.001)],
+    });
+    const portal = new PescPortal({ fetch: fetchMock as unknown as typeof fetch, verifyDelayMs: 0 });
+
+    const result = await portal.run(makeDeps());
+
+    expect(result.info).toBeNull();
+    expect(submits).toHaveLength(1);
   });
 
   it('uses session-cookie from Set-Cookie and Bearer from auth response', async () => {
@@ -230,10 +260,7 @@ describe('PescPortal.run', () => {
         });
       }
       if (/payments\/at\/current\/amount\/discretion$/.test(url)) {
-        return new Response(JSON.stringify({ amount: 0 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
+        return jsonResponse([]);
       }
       if (/\/meters\/info$/.test(url)) {
         return new Response('[]', {
@@ -465,20 +492,49 @@ describe('PescPortal.run', () => {
     expect(headers?.withtotp).toBe('true');
     expect(headers?.captcha).toBe('none');
   });
+});
 
-  it('formats balanceText: positive amount = задолженность, zero = расчёты без долга', async () => {
-    const debt = makeFetchMock({
-      bill: { amount: 42.5 },
-      metersBefore: [],
-    });
-    const portal = new PescPortal({ fetch: debt as unknown as typeof fetch });
-    const r = await portal.run(makeDeps());
-    expect(r.info?.balanceText).toBe('задолженность 42.50 руб');
+// Asserted through the shared formatter: the text is what reaches Telegram.
+const formatBalance = (lines: BillLineDto[]): string => formatBalanceText(summarizeBill(lines));
 
-    const zero = makeFetchMock({ bill: { amount: 0 }, metersBefore: [] });
-    const portal2 = new PescPortal({ fetch: zero as unknown as typeof fetch });
-    const r2 = await portal2.run(makeDeps());
-    expect(r2.info?.balanceText).toBe('расчёты без долга');
+describe('summarizeBill', () => {
+  it('sums debt (type 2) and overpayment (type 3) separately', () => {
+    expect(
+      formatBalance([
+        billLine('Содержание', 2115.51, 2),
+        billLine('Радио', 32.1, 2),
+        billLine('ГВ СОИ', 9.28, 2),
+        billLine('Электроэнергия', 3785.44, 3),
+      ]),
+    ).toBe('переплата 3785.44 руб, к оплате 2156.89 руб');
+  });
+
+  it('ignores services not opted into (checked: false) and zero rows', () => {
+    expect(
+      formatBalance([{ ...billLine('Страхование', 385, 1), checked: false }, billLine('ХВС', 0, 2)]),
+    ).toBe('расчёты без долга');
+  });
+
+  it('counts пени (fine) as debt next to the charge', () => {
+    expect(
+      formatBalance([
+        { ...billLine('ХВС', 0, 2), fine: { balance: { value: 12.5, type: 2 } } },
+        billLine('Содержание', 100, 2),
+      ]),
+    ).toBe('к оплате 112.50 руб');
+  });
+
+  it('flags unknown types and unexpected signs instead of reporting no debt', () => {
+    expect(formatBalance([billLine('Новое', 50, 4), billLine('Кредит', -500, 2)])).toBe(
+      'не распознано позиций: 2, см. лог',
+    );
+    expect(formatBalance([billLine('Содержание', 10, 2), billLine('Новое', 50, 4)])).toBe(
+      'к оплате 10.00 руб, не распознано позиций: 1, см. лог',
+    );
+  });
+
+  it('reports debt alone', () => {
+    expect(formatBalance([billLine('Содержание', 42.5, 2)])).toBe('к оплате 42.50 руб');
   });
 });
 
