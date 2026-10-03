@@ -72,7 +72,10 @@ that pesc.ru accepts works). Other portals are direct.
 `(portal, period)`. Status transitions `pending → done` (success) or
 stay `pending` with `attempts++` and `last_error` set. The
 `attempts` cap is in `runOnce.ts` — once hit, the row is skipped until
-the next period rolls over.
+the next period rolls over. A portal throws `PortalBlockedError`
+(`src/portals/types.ts`) for refusals retrying can't fix — e.g. tgc1
+meters past their поверка: the row goes straight to `blocked` with one
+Telegram notice and no "submit manually" window-closed reminder.
 
 **TOTP for pesc** via `PESC_TOTP_SECRET` when 2FA is on. Without the
 secret the portal returns an auth error and the run is reported as a
@@ -92,6 +95,7 @@ src/portals/
   registry.ts                      # name → adapter
   tgc1.ts                          # ТГК-1 (heating / hot water)
   pesc.ts                          # pesc.ru (Petroelektrosbyt) — uses PESC_PROXY_URL, optional TOTP
+  balance.ts                       # shared balanceText wording; portals map their API shape to {debt, overpayment}
 src/storage/
   sqlite.ts                        # better-sqlite3 wrapper
   migrations.ts                    # TS string constants; runner skips already-applied versions

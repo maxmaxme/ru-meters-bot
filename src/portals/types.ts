@@ -7,6 +7,19 @@ export interface PortalDeps {
   today(): Date;
 }
 
+/**
+ * Thrown by a portal when readings cannot be accepted this period for a
+ * reason retrying won't fix (e.g. an expired поверка). runOnce marks the
+ * period blocked and notifies once instead of burning the retry budget.
+ * The message is user-facing (Telegram).
+ */
+export class PortalBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PortalBlockedError';
+  }
+}
+
 export interface Portal {
   readonly name: 'tgc1' | 'pesc';
   /**

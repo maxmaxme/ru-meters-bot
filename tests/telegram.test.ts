@@ -126,6 +126,18 @@ describe('TelegramNotifier.failure', () => {
   });
 });
 
+describe('TelegramNotifier.blocked', () => {
+  it('says why and that it stops for the month', async () => {
+    const n = new TelegramNotifier({ token: 'T', chatId: '42', fetch: mockFetch });
+
+    await n.blocked({ portal: 'tgc1', period: '2026-10', reason: 'истёк срок поверки' });
+    const text = String(extractCallBody(calls[0])?.text);
+    expect(text).toBe(
+      '⛔ ТГК-1 за 2026-10: показания не поданы — истёк срок поверки.\nВ этом месяце больше не пробую.',
+    );
+  });
+});
+
 describe('TelegramNotifier.windowClosed', () => {
   it('emits the "submit manually" message', async () => {
     const n = new TelegramNotifier({

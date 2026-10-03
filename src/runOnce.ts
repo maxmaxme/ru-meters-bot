@@ -1,4 +1,4 @@
-import type { Portal, PortalDeps } from './portals/types.ts';
+import { PortalBlockedError, type Portal, type PortalDeps } from './portals/types.ts';
 import type { Notifier } from './notify/types.ts';
 import type { SubmissionsStore } from './storage/types.ts';
 import { currentPeriod } from './period.ts';
@@ -105,6 +105,18 @@ export async function runOnce(deps: RunOnceDeps): Promise<void> {
         }),
       );
     } catch (err) {
+      if (err instanceof PortalBlockedError) {
+        log.warn({ portal: portal.name, reason: err.message }, 'portal blocked for this period');
+        deps.store.markFailed(portal.name, period, err.message);
+        deps.store.markBlocked(portal.name, period);
+        // Its "подайте вручную" advice would be wrong: the portal refuses
+        // manual submissions for the same reason.
+        deps.store.markWindowClosedNotified(portal.name, period);
+        await safeNotify(() =>
+          deps.notifier.blocked({ portal: portal.name, period, reason: err.message }),
+        );
+        continue;
+      }
       const message = readMessage(err);
       log.error({ portal: portal.name, err: message }, 'portal run failed');
       deps.store.markFailed(portal.name, period, message);

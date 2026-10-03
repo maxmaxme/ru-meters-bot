@@ -3,6 +3,7 @@ import { ProxyAgent, fetch as undiciFetch, type Dispatcher } from 'undici';
 import type { AccountInfo, MeterReading } from '../storage/types.ts';
 import type { Portal, PortalDeps } from './types.ts';
 import { createLogger } from '../logger.ts';
+import { formatBalanceText, type BalanceSummary } from './balance.ts';
 
 /**
  * Minimal fetch contract that both the global Node 24 fetch and undici's
@@ -44,10 +45,31 @@ interface AccountGroupDto {
   accounts: number[];
 }
 
-interface BillDto {
-  amount?: number;
-  id?: string;
+/**
+ * One row of `payments/at/current/amount/discretion` — the endpoint returns
+ * an array with a row per service on the ЕПД (УК, Водоканал, ПСК, …), not a
+ * single total. `balance.type` is undocumented; observed on a live account:
+ *   2 — to pay (`value` equals `accrued`)
+ *   3 — overpayment (`value` with `accrued: 0`)
+ * Anything else with a non-zero value is surfaced as unrecognised rather than
+ * guessed at.
+ */
+export interface BillLineDto {
+  subservice?: { name?: string };
+  /** false = optional service the payer has not opted into (e.g. insurance). */
+  checked?: boolean;
+  charge?: { balance?: BalanceDto };
+  /** Пени — same balance encoding as `charge`. */
+  fine?: { balance?: BalanceDto };
 }
+
+interface BalanceDto {
+  value?: number;
+  type?: number;
+}
+
+const BALANCE_TYPE_DEBT = 2;
+const BALANCE_TYPE_OVERPAYMENT = 3;
 
 interface MeterDto {
   id: { registration: string };
@@ -323,21 +345,19 @@ export class PescPortal implements Portal {
     accountId: number,
   ): Promise<AccountInfo | null> {
     const path = `/api/v7/accounts/${String(accountId)}/payments/at/current/amount/discretion`;
-    let bill: BillDto;
+    // Balance is best-effort: a fetch or parse failure must not stop the
+    // readings from being submitted, so formatting stays inside the try too.
     try {
-      bill = await this.getJson<BillDto>(path, cookie, bearer);
+      const bill = await this.getJson<unknown>(path, cookie, bearer);
+      if (!Array.isArray(bill)) {
+        log.warn({ type: typeof bill }, 'bill response is not an array, leaving info null');
+        return null;
+      }
+      return { accountId: String(accountId), balanceText: formatBalanceText(summarizeBill(bill)) };
     } catch (err) {
-      log.warn({ err: readMessage(err) }, 'failed to fetch bill amount, leaving info null');
+      log.warn({ err: readMessage(err) }, 'failed to read bill amount, leaving info null');
       return null;
     }
-    const amount = bill.amount ?? 0;
-    const balanceText =
-      amount < 0
-        ? `переплата ${Math.abs(amount).toFixed(2)} руб`
-        : amount > 0
-          ? `задолженность ${amount.toFixed(2)} руб`
-          : 'расчёты без долга';
-    return { accountId: String(accountId), balanceText };
   }
 
   private async fetchMeters(
@@ -417,6 +437,38 @@ function extractCookieValue(headers: FetchResponse['headers'], name: string): st
     }
   }
   return undefined;
+}
+
+/**
+ * Folds the per-service rows into totals. Optional services not opted into
+ * (`checked: false`) are left out; пени count like the charge they sit next to.
+ */
+export function summarizeBill(lines: readonly BillLineDto[]): BalanceSummary {
+  let debt = 0;
+  let overpayment = 0;
+  let unrecognised = 0;
+  for (const line of lines) {
+    if (line.checked === false) {
+      continue;
+    }
+    for (const balance of [line.charge?.balance, line.fine?.balance]) {
+      const value = balance?.value;
+      if (value === undefined || value === 0) {
+        continue;
+      }
+      if (typeof value === 'number' && value > 0 && balance?.type === BALANCE_TYPE_DEBT) {
+        debt += value;
+      } else if (typeof value === 'number' && value > 0 && balance?.type === BALANCE_TYPE_OVERPAYMENT) {
+        overpayment += value;
+      } else {
+        // Unknown type or an unexpected sign. Counted so the message says so
+        // instead of falling through to 'расчёты без долга'.
+        unrecognised += 1;
+        log.warn({ service: line.subservice?.name, balance }, 'unrecognised bill balance');
+      }
+    }
+  }
+  return { debt, overpayment, unrecognised };
 }
 
 function parseJson<T>(text: string): T {

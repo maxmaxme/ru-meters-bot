@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runOnce } from '../src/runOnce.ts';
+import { PortalBlockedError } from '../src/portals/types.ts';
 import type { Portal, PortalDeps } from '../src/portals/types.ts';
 import type { SubmissionsStore, MeterReading } from '../src/storage/types.ts';
 import type { Notifier } from '../src/notify/types.ts';
@@ -27,12 +28,14 @@ function makeNotifier(): Notifier & { calls: Record<string, unknown[]> } {
     success: [] as unknown[],
     failure: [] as unknown[],
     windowClosed: [] as unknown[],
+    blocked: [] as unknown[],
   };
   return {
     calls,
     success: vi.fn(async (i) => void calls.success.push(i)),
     failure: vi.fn(async (i) => void calls.failure.push(i)),
     windowClosed: vi.fn(async (i) => void calls.windowClosed.push(i)),
+    blocked: vi.fn(async (i) => void calls.blocked.push(i)),
   };
 }
 
@@ -184,6 +187,31 @@ describe('runOnce', () => {
 
     expect(notifier.calls.windowClosed).toHaveLength(1);
     expect(store.getOrCreate('tgc1', '2026-05').notifiedWindowClosed).toBe(true);
+  });
+
+  it('PortalBlockedError blocks the period at once: one notice, no retries, no "submit manually"', async () => {
+    const portal = makePortal({
+      run: vi.fn(async () => {
+        throw new PortalBlockedError('истёк срок поверки');
+      }),
+    });
+    const notifier = makeNotifier();
+    const run = (iso: string): Promise<void> =>
+      runOnce({ store, notifier, portals: [portal], portalDepsFor, now: new Date(iso), force: false });
+
+    // Thu 2026-05-21 is the last weekday of the window: windowClosed would fire.
+    await run('2026-05-21T09:00:00Z');
+    await run('2026-05-21T10:00:00Z');
+
+    expect(portal.run).toHaveBeenCalledTimes(1);
+    expect(notifier.calls.blocked).toEqual([
+      { portal: 'tgc1', period: '2026-05', reason: 'истёк срок поверки' },
+    ]);
+    expect(notifier.calls.failure).toHaveLength(0);
+    expect(notifier.calls.windowClosed).toHaveLength(0);
+    const row = store.getOrCreate('tgc1', '2026-05');
+    expect(row.status).toBe('blocked');
+    expect(row.lastError).toBe('истёк срок поверки');
   });
 
   it('--force bypasses the targetDay gate and the done check', async () => {

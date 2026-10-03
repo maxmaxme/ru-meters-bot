@@ -1,6 +1,7 @@
 import type { AccountInfo, MeterReading } from '../storage/types.ts';
-import type { Portal, PortalDeps } from './types.ts';
+import { PortalBlockedError, type Portal, type PortalDeps } from './types.ts';
 import { createLogger } from '../logger.ts';
+import { formatBalanceText } from './balance.ts';
 
 const log = createLogger('portal:tgc1');
 
@@ -16,6 +17,8 @@ interface DeviceDto {
   serviceName: string;
   lastReading: number;
   dtLastReading: string;
+  /** DD.MM.YYYY. Once past, the portal stops taking readings for the meter. */
+  dtNextVerification?: string;
   enabled: boolean;
   requiredVerification?: boolean;
   verificationWarning?: boolean;
@@ -69,12 +72,32 @@ export class Tgc1Portal implements Portal {
     const todayStr = todayDdMmYyyy(deps.today());
     const submitted: MeterReading[] = [];
     const newlyPosted: number[] = [];
+    const overdue: DeviceDto[] = [];
 
     for (const d of devices) {
+      // The portal rejects readings for a meter past its поверка ("Передача
+      // текущих показаний по приборам учета с истекшим сроком поверки
+      // невозможна"), so don't POST; retrying can't fix it either.
+      if (d.dtNextVerification !== undefined && isBeforeDdMmYyyy(d.dtNextVerification, todayStr)) {
+        log.warn({ meter: d.number, dtNextVerification: d.dtNextVerification }, 'verification overdue, skipping');
+        overdue.push(d);
+        continue;
+      }
+
+      // A portal value above our last submission means someone sent a real
+      // reading by hand — fine, resubmit it. Only a drop below what we sent is
+      // suspicious. Refusing on any difference would wedge the bot for good:
+      // the cache only updates on a successful run.
       const cached = deps.lastSubmittedValueFor(d.number);
-      if (cached !== null && Math.abs(cached - d.lastReading) > 0.001) {
+      if (cached !== null && cached - d.lastReading > 0.001) {
         throw new Error(
-          `Cached prev (${String(cached)}) for meter ${d.number} differs from portal (${String(d.lastReading)}) — refuse to submit`,
+          `Cached prev (${String(cached)}) for meter ${d.number} is above portal (${String(d.lastReading)}) — refuse to submit`,
+        );
+      }
+      if (cached !== null && d.lastReading - cached > 0.001) {
+        log.warn(
+          { meter: d.number, cached, portal: d.lastReading },
+          'portal reading is above our last submission (manual submit?), proceeding',
         );
       }
 
@@ -84,6 +107,7 @@ export class Tgc1Portal implements Portal {
             meter: d.number,
             requiredVerification: d.requiredVerification,
             verificationWarning: d.verificationWarning,
+            dtNextVerification: d.dtNextVerification,
           },
           'meter has verification warning, proceeding anyway',
         );
@@ -122,6 +146,14 @@ export class Tgc1Portal implements Portal {
       }
     }
 
+    if (overdue.length > 0) {
+      const list = overdue
+        .map((d) => `${d.serviceName} №${d.number} (поверка до ${d.dtNextVerification ?? '?'})`)
+        .join(', ');
+      const rest = submitted.length > 0 ? `; остальные поданы: ${String(submitted.length)} шт` : '';
+      throw new PortalBlockedError(`истёк срок поверки — ${list}${rest}`);
+    }
+
     return { info, values: submitted, alreadySubmitted: newlyPosted.length === 0 };
   }
 
@@ -136,25 +168,32 @@ export class Tgc1Portal implements Portal {
     return body.accessToken;
   }
 
+  /**
+   * Best-effort: the balance only decorates the success message, so a failing
+   * or odd debt endpoint must not stop the readings from being submitted.
+   */
   private async fetchAccountInfo(token: string): Promise<AccountInfo | null> {
-    const body = await this.json<DebtDto>(
-      'GET',
-      '/api/fl/dashboard/debt',
-      token,
-      undefined,
-      '/fl/',
-    );
-    if (!body.accountList || body.accountList.length === 0) {
+    let body: DebtDto;
+    try {
+      body = await this.json<DebtDto>('GET', '/api/fl/dashboard/debt', token, undefined, '/fl/');
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, 'failed to fetch debt, leaving info null');
       return null;
     }
-    const sm = body.sm;
-    const balanceText =
-      sm < 0
-        ? `переплата ${Math.abs(sm).toFixed(2)} руб`
-        : sm > 0
-          ? `задолженность ${sm.toFixed(2)} руб`
-          : 'расчёты без долга';
-    return { accountId: body.accountList.join(', '), balanceText };
+    if (!Array.isArray(body.accountList) || body.accountList.length === 0) {
+      return null;
+    }
+    const sm: unknown = body.sm;
+    if (typeof sm !== 'number') {
+      // A missing or string `sm` would otherwise compare false both ways and
+      // read as 'расчёты без долга'.
+      log.warn({ sm }, 'debt.sm is not a number');
+    }
+    const summary =
+      typeof sm === 'number'
+        ? { debt: Math.max(sm, 0), overpayment: Math.max(-sm, 0) }
+        : { debt: 0, overpayment: 0, unrecognised: 1 };
+    return { accountId: body.accountList.join(', '), balanceText: formatBalanceText(summary) };
   }
 
   private async fetchDevices(token: string): Promise<DeviceDto[]> {
@@ -233,6 +272,17 @@ function todayDdMmYyyy(today: Date): string {
     month: '2-digit',
     year: 'numeric',
   }).format(today);
+}
+
+/** `a < b` for DD.MM.YYYY dates; false if either does not parse. */
+function isBeforeDdMmYyyy(a: string, b: string): boolean {
+  const key = (s: string): string | null => {
+    const m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(s);
+    return m ? `${m[3]}${m[2]}${m[1]}` : null;
+  };
+  const ka = key(a);
+  const kb = key(b);
+  return ka !== null && kb !== null && ka < kb;
 }
 
 function sleep(ms: number): Promise<void> {
