@@ -1,0 +1,24 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":dependencyDashboard", ":semanticCommits", ":timezone(Europe/Madrid)"],
+  "schedule": ["* 6-10 * * *"],
+  "prHourlyLimit": 4,
+  "prConcurrentLimit": 8,
+  "minimumReleaseAge": "3 days",
+  "lockFileMaintenance": { "enabled": true, "schedule": ["* 6-10 1 * *"] },
+  "packageRules": [
+    {
+      "description": "Dev-only tooling never reaches the image; CI (typecheck, tests) gates it",
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "dev dependencies",
+      "automerge": true
+    },
+    {
+      "description": "Node 24 is the runtime (Docker, CI, the Pi): its image and types stay on 24.x",
+      "matchPackageNames": ["node", "@types/node"],
+      "allowedVersions": "/^24\\./"
+    }
+  ]
+}
