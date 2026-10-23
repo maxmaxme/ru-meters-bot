@@ -8,12 +8,15 @@
   "lockFileMaintenance": { "enabled": true, "schedule": ["* 6-10 1 * *"] },
   "packageRules": [
     {
-      "description": "Dev-only tooling never reaches the image; CI (typecheck, tests) gates it",
-      "matchManagers": ["npm"],
-      "matchDepTypes": ["devDependencies"],
-      "matchUpdateTypes": ["patch", "minor"],
-      "groupName": "dev dependencies",
+      "description": "Minor/patch/digest bumps ride one weekly PR and merge themselves once CI is green",
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "non-major dependencies",
       "automerge": true
+    },
+    {
+      "description": "Majors wait for a tick in the Dependency Dashboard",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
     },
     {
       "description": "Node 24 is the runtime (Docker, CI, the Pi): its image and types stay on 24.x",
