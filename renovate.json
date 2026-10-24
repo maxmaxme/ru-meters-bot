@@ -5,7 +5,7 @@
   "prHourlyLimit": 4,
   "prConcurrentLimit": 8,
   "minimumReleaseAge": "3 days",
-  "lockFileMaintenance": { "enabled": true, "schedule": ["* 6-10 1 * *"] },
+  "lockFileMaintenance": { "enabled": true, "automerge": true, "schedule": ["* 6-10 * * *"] },
   "packageRules": [
     {
       "description": "Minor/patch/digest bumps ride one weekly PR and merge themselves once CI is green",
