@@ -5,7 +5,13 @@
   "prHourlyLimit": 4,
   "prConcurrentLimit": 8,
   "minimumReleaseAge": "3 days",
-  "lockFileMaintenance": { "enabled": true, "automerge": true, "schedule": ["* 6-10 * * *"] },
+  "lockFileMaintenance": {
+    "description": "Lockfile updates have no release timestamp; the default timestamp-required would hold stability-days pending forever. npm still gets --before from minimumReleaseAge",
+    "enabled": true,
+    "automerge": true,
+    "minimumReleaseAgeBehaviour": "timestamp-optional",
+    "schedule": ["* 6-10 * * *"]
+  },
   "packageRules": [
     {
       "description": "Minor/patch/digest bumps ride one weekly PR and merge themselves once CI is green",
