@@ -25,8 +25,8 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "Node 24 is the runtime (Docker, CI, the Pi): its image and types stay on 24.x",
-      "matchPackageNames": ["node", "@types/node"],
+      "description": "Node 24 is the runtime (Docker, CI, the Pi): its image, setup-node and types stay on 24.x. depName, not packageName: setup-node's packageName is actions/node-versions",
+      "matchDepNames": ["node", "@types/node"],
       "allowedVersions": "/^24\\./"
     }
   ]
